@@ -15,7 +15,7 @@ import {ITeamVault} from "./interfaces/ITeamVault.sol";
 ///
 /// Key mechanics
 /// - Rounds: 15-minute base duration; each ticket extends by `extensionPerTicket`.
-/// - Fees: 0.001% post-fee taken at settlement time.
+/// - Fees: 0.001% charged at claim time (per payout).
 /// - Distribution (from net pool): 48% winner, 20% dividends (equal split),
 ///   10% airdrop (random winners), 12% team (sent to `vault`), 10% carry.
 /// - VRF: external randomness is supplied and used to compute the vault funding ratio.
@@ -27,13 +27,14 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         uint256 indexed roundId,
         uint64 startTime,
         uint64 endTime,
+        uint256 startingTicketPrice,
         uint256 carryPool
     );
     event TicketPurchased(
         uint256 indexed roundId,
         address indexed buyer,
         uint256 quantity,
-        uint256 paidAmount,
+        uint256 ticketPrice,
         uint64 newEndTime
     );
     event FreeTicketClaimed(uint256 indexed roundId, address indexed user);
@@ -54,6 +55,7 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         uint256 carryAmount
     );
     event ConfigUpdated(string key);
+    event ExpiredSwept(uint256 indexed roundId, uint256 amount);
 
     enum RewardType {
         Winner,
@@ -61,12 +63,28 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         Airdrop
     }
 
-    uint256 public constant BASE_ROUND_DURATION = 15 minutes;
-    uint256 public extensionPerTicket = 30 seconds;
+    address public authorizer;
+    bytes32 private immutable DOMAIN_SEPARATOR;
+    bytes32 private constant EIP712_DOMAIN_TYPEHASH =
+        keccak256(
+            "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+        );
+    bytes32 private constant CLAIM_TYPEHASH =
+        keccak256(
+            "ClaimFreeTicket(uint256 round,address user,uint256 deadline)"
+        );
 
-    uint256 public ticketPrice;
-    address public vault;
     uint256 public constant FEE_PPM = 10; // 0.001%
+    uint256 public constant BASE_ROUND_DURATION = 60 minutes;
+    uint256 public extensionPerTicket = 180 seconds;
+
+    // Current ticket price (updates intra-round)
+    uint256 public ticketPrice;
+    // Starting price to reset to on each new round
+    uint256 public startingTicketPrice;
+    // Price increment added after each paid purchase (not on free claims)
+    uint256 public priceIncrementPerPurchase;
+    address public vault;
     address public feeRecipient;
     uint32 public airdropWinnersCount = 5;
 
@@ -87,17 +105,6 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
     uint16 public placeholderTeamBps = 1200; // 12%
     uint16 public placeholderCarryBps = 1000; // 10%
 
-    address public authorizer;
-    bytes32 private immutable DOMAIN_SEPARATOR;
-    bytes32 private constant EIP712_DOMAIN_TYPEHASH =
-        keccak256(
-            "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
-        );
-    bytes32 private constant CLAIM_TYPEHASH =
-        keccak256(
-            "ClaimFreeTicket(uint256 round,address user,uint256 deadline)"
-        );
-
     struct RoundMeta {
         uint64 startTime;
         uint64 endTime;
@@ -107,6 +114,7 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         bool settled;
         uint16 fundingRatioBps;
         address winner;
+        uint256 unclaimed; // total gross claimable remaining (winner + dividends + airdrops)
     }
 
     uint256 public currentRoundId;
@@ -127,9 +135,9 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
     mapping(uint256 => mapping(address => bool)) public claimedDividend;
     mapping(uint256 => mapping(address => bool)) public claimedAirdrop;
 
-    address public lastRoundWinner;
-    uint256 public lastRoundTotalPool;
-    uint16 public lastRoundFundingRatioBps;
+    // Expiry and sweeping
+    uint256 public claimExpiryRounds = 24;
+    mapping(uint256 => bool) public sweptExpired;
 
     constructor(
         uint256 _ticketPrice,
@@ -139,7 +147,8 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         address _authorizer
     ) Ownable(msg.sender) {
         require(_vault != address(0), "VAULT_ZERO");
-        ticketPrice = _ticketPrice;
+        startingTicketPrice = _ticketPrice;
+        ticketPrice = startingTicketPrice;
         vault = _vault;
         extensionPerTicket = _extensionPerTicket == 0
             ? extensionPerTicket
@@ -175,7 +184,6 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         uint256 maxTotalCost,
         uint256 deadline
     ) external payable nonReentrant {
-        require(tx.origin == msg.sender, "NOT_EOA");
         require(quantity > 0, "QTY_ZERO");
         require(block.timestamp <= deadline, "EXPIRED");
         RoundMeta storage rm = rounds[currentRoundId];
@@ -188,7 +196,27 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         if (change > 0) {
             require(_sendValue(msg.sender, change), "REFUND_FAIL");
         }
-        _afterTicketMint(msg.sender, quantity, cost);
+        uint64 newEnd = rm.endTime + uint64(extensionPerTicket * quantity);
+        rm.endTime = newEnd;
+        rm.pool += cost;
+        rm.totalTickets += quantity;
+        rm.lastBuyer = msg.sender;
+        if (!isParticipantInRound[currentRoundId][msg.sender]) {
+            isParticipantInRound[currentRoundId][msg.sender] = true;
+            roundParticipants[currentRoundId].push(msg.sender);
+        }
+        ticketsOf[currentRoundId][msg.sender] += quantity;
+        // After each paid purchase, increase the ticket price by configured increment
+        unchecked {
+            ticketPrice = ticketPrice + priceIncrementPerPurchase;
+        }
+        emit TicketPurchased(
+            currentRoundId,
+            msg.sender,
+            quantity,
+            ticketPrice,
+            newEnd
+        );
     }
 
     /// @notice Settle the current round after it ends. No user transfers occur here; all
@@ -216,14 +244,7 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         }
         emit VaultFunded(currentRoundId, desiredInjection, injected, ratioBps);
 
-        // Protocol fee is taken from the round pool
-        uint256 fee = (rm.pool * FEE_PPM) / 1_000_000;
         uint256 netPool = rm.pool;
-        if (fee > 0 && feeRecipient != address(0)) {
-            if (_sendValue(feeRecipient, fee)) {
-                netPool = rm.pool - fee;
-            }
-        }
 
         // Placeholder distribution splits (in BPS)
         uint256 winnerShare = (netPool * placeholderWinnerBps) / 10_000;
@@ -287,6 +308,14 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
             }
         }
 
+        // Snapshot total unclaimed gross for this round
+        uint256 winnerClaimable = rm.winner == address(0) ? 0 : winnerShare;
+        uint256 dividendsClaimable = dividendPerParticipant[currentRoundId] *
+            participantCount;
+        uint256 airdropsClaimable = airdropPerWinner[currentRoundId] *
+            airdropWinners[currentRoundId].length;
+        rm.unclaimed = winnerClaimable + dividendsClaimable + airdropsClaimable;
+
         // Team share: attempt immediate transfer to the vault. If it fails, add to carry.
         if (teamShare > 0) {
             if (vault != address(0)) {
@@ -299,9 +328,6 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         }
         uint256 carryPool = carryShare + undistributed;
         rm.settled = true;
-        lastRoundWinner = rm.winner;
-        lastRoundTotalPool = rm.pool;
-        lastRoundFundingRatioBps = rm.fundingRatioBps;
         emit RoundSettled(
             currentRoundId,
             rm.winner,
@@ -313,6 +339,12 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
             carryPool
         );
         _startNextRound(carryPool);
+
+        // Auto-sweep an expired round, if any
+        if (currentRoundId > claimExpiryRounds + 1) {
+            uint256 sweepRound = currentRoundId - (claimExpiryRounds + 1);
+            _sweepExpiredInternal(sweepRound);
+        }
     }
 
     function claim(
@@ -320,8 +352,9 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         RewardType[] calldata rewardTypes
     ) external nonReentrant {
         require(rounds[roundId].settled, "ROUND_NOT_SETTLED");
-        require(roundId >= currentRoundId - 5, "ROUND_TOO_OLD");
+        require(roundId >= currentRoundId - claimExpiryRounds, "ROUND_TOO_OLD");
         uint256 totalPayout = 0;
+        uint256 grossPayout = 0;
         for (uint256 i = 0; i < rewardTypes.length; i++) {
             RewardType rt = rewardTypes[i];
             if (rt == RewardType.Winner) {
@@ -329,47 +362,90 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
                     !claimedWinner[roundId] &&
                     rounds[roundId].winner == msg.sender
                 ) {
-                    uint256 amt = winnerShareOfRound[roundId];
-                    require(amt > 0, "NO_WINNER_AMT");
+                    uint256 gross = winnerShareOfRound[roundId];
+                    require(gross > 0, "NO_WINNER_AMT");
                     claimedWinner[roundId] = true;
-                    totalPayout += amt;
+                    grossPayout += gross;
                 }
             } else if (rt == RewardType.Dividend) {
                 if (
                     !claimedDividend[roundId][msg.sender] &&
                     isParticipantInRound[roundId][msg.sender]
                 ) {
-                    uint256 amt2 = dividendPerParticipant[roundId];
-                    require(amt2 > 0, "NO_DIVIDEND");
+                    uint256 gross2 = dividendPerParticipant[roundId];
+                    require(gross2 > 0, "NO_DIVIDEND");
                     claimedDividend[roundId][msg.sender] = true;
-                    totalPayout += amt2;
+                    grossPayout += gross2;
                 }
             } else if (rt == RewardType.Airdrop) {
                 if (
                     !claimedAirdrop[roundId][msg.sender] &&
                     isAirdropWinner[roundId][msg.sender]
                 ) {
-                    uint256 amt3 = airdropPerWinner[roundId];
-                    require(amt3 > 0, "NO_AIRDROP");
+                    uint256 gross3 = airdropPerWinner[roundId];
+                    require(gross3 > 0, "NO_AIRDROP");
                     claimedAirdrop[roundId][msg.sender] = true;
-                    totalPayout += amt3;
+                    grossPayout += gross3;
                 }
             }
         }
-        require(totalPayout > 0, "NOTHING_TO_CLAIM");
+        require(grossPayout > 0, "NOTHING_TO_CLAIM");
+        // Deduct from round's unclaimed total before external calls
+        RoundMeta storage rmC = rounds[roundId];
+        require(rmC.unclaimed >= grossPayout, "OVERCLAIM");
+        unchecked {
+            rmC.unclaimed = rmC.unclaimed - grossPayout;
+        }
+        uint256 fee = (grossPayout * FEE_PPM) / 1_000_000;
+        totalPayout = grossPayout - fee;
+        if (fee > 0 && feeRecipient != address(0)) {
+            require(_sendValue(feeRecipient, fee), "FEE_SEND_FAIL");
+        }
         require(_sendValue(msg.sender, totalPayout), "CLAIM_SEND_FAIL");
     }
 
+    /// @notice Manually sweep an expired round's unclaimed rewards to the vault
+    function sweepExpired(uint256 roundId) external nonReentrant {
+        _sweepExpiredInternal(roundId);
+    }
+
+    function _sweepExpiredInternal(uint256 roundId) internal {
+        if (sweptExpired[roundId]) return;
+        RoundMeta storage rm = rounds[roundId];
+        require(rm.settled, "ROUND_NOT_SETTLED");
+        require(currentRoundId > roundId + claimExpiryRounds, "NOT_EXPIRED");
+        uint256 amount = rm.unclaimed;
+        if (amount == 0) {
+            sweptExpired[roundId] = true;
+            emit ExpiredSwept(roundId, 0);
+            return;
+        }
+        require(vault != address(0), "VAULT_ZERO");
+        require(_sendValue(vault, amount), "SWEEP_SEND_FAIL");
+        sweptExpired[roundId] = true;
+        emit ExpiredSwept(roundId, amount);
+    }
+
+    // -- Config --
     /// @notice Set or update the team vault address (receives team share, funds rounds)
     function setVault(address newVault) external onlyOwner {
         require(newVault != address(0), "ZERO_ADDR");
         vault = newVault;
         emit ConfigUpdated("vault");
     }
-    /// @notice Update ticket price (in wei)
-    function setTicketPrice(uint256 newPrice) external onlyOwner {
-        ticketPrice = newPrice;
-        emit ConfigUpdated("ticketPrice");
+    /// @notice Set the starting ticket price for each new round
+    function setStartingTicketPrice(
+        uint256 newStartingPrice
+    ) external onlyOwner {
+        startingTicketPrice = newStartingPrice;
+        emit ConfigUpdated("startingTicketPrice");
+    }
+    /// @notice Set the increment amount added to price after each paid purchase
+    function setPriceIncrementPerPurchase(
+        uint256 newIncrement
+    ) external onlyOwner {
+        priceIncrementPerPurchase = newIncrement;
+        emit ConfigUpdated("priceIncrementPerPurchase");
     }
     /// @notice Update the default number of airdrop winners per round
     function setAirdropWinnersCount(uint32 newCount) external onlyOwner {
@@ -428,16 +504,14 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         IERC20(token).transfer(to, amount);
     }
 
-    /// @notice Withdraw native ETH from this contract
-    function ownerWithdrawETH(
-        uint256 amount,
-        address payable to
-    ) external onlyOwner {
-        require(to != address(0), "ZERO_ADDR");
-        require(address(this).balance >= amount, "INSUFFICIENT_ETH");
-        require(_sendValue(to, amount), "SEND_FAIL");
+    /// @notice Update the number of rounds after which unclaimed rewards expire
+    function setClaimExpiryRounds(uint256 newExpiry) external onlyOwner {
+        require(newExpiry >= 1 && newExpiry <= 365, "BAD_EXPIRY");
+        claimExpiryRounds = newExpiry;
+        emit ConfigUpdated("claimExpiryRounds");
     }
 
+    // -- VRF --
     /// @notice VRF callback invoked by the coordinator with the randomness for a request
     /// @param requestId The VRF request id
     /// @param randomWord The randomness value supplied
@@ -486,6 +560,7 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         return this.requestRandomnessForCurrentRound(deadline);
     }
 
+    // -- Public Getters --
     /// @notice Get public state for the current active round
     function getCurrentRoundData()
         external
@@ -507,30 +582,26 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         totalTickets = rm.totalTickets;
         lastBuyer = rm.lastBuyer;
     }
+
     /// @notice Seconds remaining before the current round expires (0 if ended)
     function getRemainingSeconds() external view returns (uint256) {
         RoundMeta storage rm = rounds[currentRoundId];
         if (block.timestamp >= rm.endTime) return 0;
         return rm.endTime - block.timestamp;
     }
+
     /// @notice Current ticket price (in wei)
     function getTicketPrice() external view returns (uint256) {
         return ticketPrice;
     }
+
     /// @notice Get the user's ticket count for the current round
     function getUserTicketsInCurrentRound(
         address user
     ) external view returns (uint256) {
         return ticketsOf[currentRoundId][user];
     }
-    /// @notice Summary info for the previous round (winner, total pool, funding ratio)
-    function getLastRoundSummary()
-        external
-        view
-        returns (address winner, uint256 totalPool, uint16 fundingRatioBps)
-    {
-        return (lastRoundWinner, lastRoundTotalPool, lastRoundFundingRatioBps);
-    }
+
     /// @notice Get the participant addresses for a given round (may be large)
     function getRoundParticipants(
         uint256 roundId
@@ -538,32 +609,7 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         return roundParticipants[roundId];
     }
 
-    /// @dev Internal helper to update state after ticket mint/purchase
-    function _afterTicketMint(
-        address buyer,
-        uint256 quantity,
-        uint256 paidAmount
-    ) internal {
-        RoundMeta storage rm = rounds[currentRoundId];
-        uint64 newEnd = rm.endTime + uint64(extensionPerTicket * quantity);
-        rm.endTime = newEnd;
-        rm.pool += paidAmount;
-        rm.totalTickets += quantity;
-        rm.lastBuyer = buyer;
-        if (!isParticipantInRound[currentRoundId][buyer]) {
-            isParticipantInRound[currentRoundId][buyer] = true;
-            roundParticipants[currentRoundId].push(buyer);
-        }
-        ticketsOf[currentRoundId][buyer] += quantity;
-        emit TicketPurchased(
-            currentRoundId,
-            buyer,
-            quantity,
-            paidAmount,
-            newEnd
-        );
-    }
-
+    // -- Internal Helpers --
     /// @dev Internal helper to start the next round with an optional carry pool
     function _startNextRound(uint256 carryPool) internal {
         ++currentRoundId;
@@ -571,7 +617,15 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         rm.startTime = uint64(block.timestamp);
         rm.endTime = uint64(block.timestamp + BASE_ROUND_DURATION);
         rm.pool = carryPool;
-        emit RoundStarted(currentRoundId, rm.startTime, rm.endTime, carryPool);
+        // Reset ticket price to starting price for the new round
+        ticketPrice = startingTicketPrice;
+        emit RoundStarted(
+            currentRoundId,
+            rm.startTime,
+            rm.endTime,
+            startingTicketPrice,
+            carryPool
+        );
     }
 
     /// @dev Internal helper that derives the funding ratio (e.g., 5%-10%). If randomness
