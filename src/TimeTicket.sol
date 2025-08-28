@@ -63,17 +63,6 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         Airdrop
     }
 
-    address public authorizer;
-    bytes32 private immutable DOMAIN_SEPARATOR;
-    bytes32 private constant EIP712_DOMAIN_TYPEHASH =
-        keccak256(
-            "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
-        );
-    bytes32 private constant CLAIM_TYPEHASH =
-        keccak256(
-            "ClaimFreeTicket(uint256 round,address user,uint256 deadline)"
-        );
-
     uint256 public constant FEE_PPM = 10; // 0.001%
     uint256 public constant BASE_ROUND_DURATION = 60 minutes;
     uint256 public extensionPerTicket = 180 seconds;
@@ -134,6 +123,7 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
     mapping(uint256 => bool) public claimedWinner;
     mapping(uint256 => mapping(address => bool)) public claimedDividend;
     mapping(uint256 => mapping(address => bool)) public claimedAirdrop;
+    mapping(address => uint256) public totalClaimed;
 
     // Expiry and sweeping
     uint256 public claimExpiryRounds = 24;
@@ -143,8 +133,7 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         uint256 _ticketPrice,
         address _vault,
         uint256 _extensionPerTicket,
-        uint32 _airdropWinnersCount,
-        address _authorizer
+        uint32 _airdropWinnersCount
     ) Ownable(msg.sender) {
         require(_vault != address(0), "VAULT_ZERO");
         startingTicketPrice = _ticketPrice;
@@ -157,17 +146,6 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
             ? airdropWinnersCount
             : _airdropWinnersCount;
         feeRecipient = msg.sender;
-        authorizer = _authorizer;
-
-        DOMAIN_SEPARATOR = keccak256(
-            abi.encode(
-                EIP712_DOMAIN_TYPEHASH,
-                keccak256(bytes("TimeTicketUnlimited")),
-                keccak256(bytes("1")),
-                block.chainid,
-                address(this)
-            )
-        );
 
         _startNextRound(0);
     }
@@ -401,6 +379,7 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         if (fee > 0 && feeRecipient != address(0)) {
             require(_sendValue(feeRecipient, fee), "FEE_SEND_FAIL");
         }
+        totalClaimed[msg.sender] += totalPayout;
         require(_sendValue(msg.sender, totalPayout), "CLAIM_SEND_FAIL");
     }
 
@@ -464,11 +443,6 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         require(newRecipient != address(0), "ZERO_ADDR");
         feeRecipient = newRecipient;
         emit ConfigUpdated("feeRecipient");
-    }
-    /// @notice Update the EIP-712 authorizer for free ticket claims
-    function setAuthorizer(address newAuthorizer) external onlyOwner {
-        authorizer = newAuthorizer;
-        emit ConfigUpdated("authorizer");
     }
     /// @notice Set the VRF coordinator address used to validate callbacks
     function setVrfCoordinator(address newVrf) external onlyOwner {
