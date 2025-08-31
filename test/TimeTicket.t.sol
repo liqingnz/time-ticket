@@ -2,9 +2,10 @@
 pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
-import {TimeTicketUnlimited} from "../src/TimeTicket.sol";
+import {TimeTicketUpgradeable} from "../src/TimeTicket.sol";
 import {TeamVault} from "../src/TeamVault.sol";
 import {IGoatVRF} from "../src/interfaces/IGoatVrf.sol";
+import {UpgradeableProxy} from "../src/UpgradeableProxy.sol";
 
 contract MockGoatVRF is IGoatVRF {
     uint256 public nextId = 1;
@@ -34,7 +35,7 @@ contract MockGoatVRF is IGoatVRF {
 }
 
 contract TimeTicketTest is Test {
-    TimeTicketUnlimited ticket;
+    TimeTicketUpgradeable ticket;
     TeamVault vault;
     MockGoatVRF vrf;
 
@@ -59,7 +60,24 @@ contract TimeTicketTest is Test {
         vault = new TeamVault(address(this));
         vm.deal(address(vault), 100 ether);
 
-        ticket = new TimeTicketUnlimited(START_PRICE, address(vault), EXT, 3);
+        // Deploy implementation
+        TimeTicketUpgradeable implementation = new TimeTicketUpgradeable();
+
+        // Deploy proxy with initialization
+        UpgradeableProxy proxy = new UpgradeableProxy(
+            address(implementation),
+            address(this), // owner
+            abi.encodeWithSelector(
+                TimeTicketUpgradeable.initialize.selector,
+                START_PRICE,
+                address(vault),
+                EXT,
+                3
+            )
+        );
+
+        // Cast proxy to interface
+        ticket = TimeTicketUpgradeable(payable(address(proxy)));
         ticket.setPriceIncrementPerPurchase(PRICE_INC);
         ticket.setFeeRecipient(feeCollector);
 
@@ -144,9 +162,9 @@ contract TimeTicketTest is Test {
         uint256 feeBefore = feeCollector.balance;
         uint256 carolBefore = carol.balance;
         vm.prank(carol);
-        TimeTicketUnlimited.RewardType[]
-            memory rts = new TimeTicketUnlimited.RewardType[](1);
-        rts[0] = TimeTicketUnlimited.RewardType.Winner;
+        TimeTicketUpgradeable.RewardType[]
+            memory rts = new TimeTicketUpgradeable.RewardType[](1);
+        rts[0] = TimeTicketUpgradeable.RewardType.Winner;
         ticket.claim(roundId, rts);
         uint256 feeAfter = feeCollector.balance;
         uint256 carolAfter = carol.balance;
@@ -157,8 +175,8 @@ contract TimeTicketTest is Test {
         // Dividend claim (alice)
         uint256 aliceBefore = alice.balance;
         vm.prank(alice);
-        rts = new TimeTicketUnlimited.RewardType[](1);
-        rts[0] = TimeTicketUnlimited.RewardType.Dividend;
+        rts = new TimeTicketUpgradeable.RewardType[](1);
+        rts[0] = TimeTicketUpgradeable.RewardType.Dividend;
         ticket.claim(roundId, rts);
         uint256 aliceAfter = alice.balance;
         uint256 feeDiv = (divPerUser * ticket.FEE_PPM()) / 1_000_000;
@@ -171,8 +189,8 @@ contract TimeTicketTest is Test {
         if (airWinner != address(0)) {
             uint256 wBefore = airWinner.balance;
             vm.prank(airWinner);
-            rts = new TimeTicketUnlimited.RewardType[](1);
-            rts[0] = TimeTicketUnlimited.RewardType.Airdrop;
+            rts = new TimeTicketUpgradeable.RewardType[](1);
+            rts[0] = TimeTicketUpgradeable.RewardType.Airdrop;
             ticket.claim(roundId, rts);
             uint256 wAfter = airWinner.balance;
             uint256 feeAir = (airPerWinner * ticket.FEE_PPM()) / 1_000_000;
@@ -350,9 +368,9 @@ contract TimeTicketTest is Test {
     }
 
     function testClaimRevertsForNonExistentRound() public {
-        TimeTicketUnlimited.RewardType[]
-            memory rts = new TimeTicketUnlimited.RewardType[](1);
-        rts[0] = TimeTicketUnlimited.RewardType.Winner;
+        TimeTicketUpgradeable.RewardType[]
+            memory rts = new TimeTicketUpgradeable.RewardType[](1);
+        rts[0] = TimeTicketUpgradeable.RewardType.Winner;
 
         vm.prank(alice);
         vm.expectRevert("ROUND_NOT_SETTLED");
@@ -371,14 +389,13 @@ contract TimeTicketTest is Test {
         ticket.settle();
 
         // Bob tries to claim winner reward but isn't the winner
-        TimeTicketUnlimited.RewardType[]
-            memory rts = new TimeTicketUnlimited.RewardType[](1);
-        rts[0] = TimeTicketUnlimited.RewardType.Winner;
+        TimeTicketUpgradeable.RewardType[]
+            memory rts = new TimeTicketUpgradeable.RewardType[](1);
+        rts[0] = TimeTicketUpgradeable.RewardType.Winner;
 
-        // TODO: Fix arithmetic underflow in claim function
-        // vm.prank(bob);
-        // vm.expectRevert("NOT_WINNER");
-        // ticket.claim(roundId, rts);
+        vm.prank(bob);
+        vm.expectRevert("NOTHING_TO_CLAIM");
+        ticket.claim(roundId, rts);
     }
 
     function testMultipleRewardTypeClaim() public {
@@ -393,19 +410,18 @@ contract TimeTicketTest is Test {
         ticket.settle();
 
         // Alice claims both winner and dividend in one transaction
-        TimeTicketUnlimited.RewardType[]
-            memory rts = new TimeTicketUnlimited.RewardType[](2);
-        rts[0] = TimeTicketUnlimited.RewardType.Winner;
-        rts[1] = TimeTicketUnlimited.RewardType.Dividend;
+        TimeTicketUpgradeable.RewardType[]
+            memory rts = new TimeTicketUpgradeable.RewardType[](2);
+        rts[0] = TimeTicketUpgradeable.RewardType.Winner;
+        rts[1] = TimeTicketUpgradeable.RewardType.Dividend;
 
-        // TODO: Fix arithmetic underflow in claim function
-        // uint256 aliceBalanceBefore = alice.balance;
-        // vm.prank(alice);
-        // ticket.claim(roundId, rts);
-        // uint256 aliceBalanceAfter = alice.balance;
+        uint256 aliceBalanceBefore = alice.balance;
+        vm.prank(alice);
+        ticket.claim(roundId, rts);
+        uint256 aliceBalanceAfter = alice.balance;
 
         // Should have received some payout
-        // assertGt(aliceBalanceAfter, aliceBalanceBefore);
+        assertGt(aliceBalanceAfter, aliceBalanceBefore);
     }
 
     function testCannotClaimTwice() public {
@@ -438,18 +454,18 @@ contract TimeTicketTest is Test {
         // For now, skip the actual claim test due to arithmetic error
         // This seems to be an issue with fee calculation
         // First claim
-        TimeTicketUnlimited.RewardType[]
-            memory rts = new TimeTicketUnlimited.RewardType[](1);
-        rts[0] = TimeTicketUnlimited.RewardType.Winner;
+        TimeTicketUpgradeable.RewardType[]
+            memory rts = new TimeTicketUpgradeable.RewardType[](1);
+        rts[0] = TimeTicketUpgradeable.RewardType.Winner;
 
-        // TODO: Fix arithmetic underflow in claim function
-        // vm.prank(alice);
-        // ticket.claim(roundId, rts);
+        vm.prank(alice);
+        ticket.claim(roundId, rts);
+        assertEq(ticket.claimedWinner(roundId), true);
 
         // Second claim should fail
-        // vm.prank(alice);
-        // vm.expectRevert("ALREADY_CLAIMED");
-        // ticket.claim(roundId, rts);
+        vm.prank(alice);
+        vm.expectRevert("NOTHING_TO_CLAIM");
+        ticket.claim(roundId, rts);
     }
 
     // === VRF INTEGRATION ===

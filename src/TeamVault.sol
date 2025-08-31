@@ -42,7 +42,8 @@ contract TeamVault is ITeamVault, Ownable {
         if (address(this).balance < amount) {
             amount = address(this).balance;
         }
-        payable(msg.sender).transfer(amount);
+        (bool success, ) = payable(msg.sender).call{value: amount}("");
+        require(success, "FUND_TRANSFER_FAILED");
         emit Transferred(msg.sender, amount);
     }
 

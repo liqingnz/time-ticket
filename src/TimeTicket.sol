@@ -2,12 +2,13 @@
 pragma solidity ^0.8.20;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {IGoatVRF, IRandomnessCallback} from "./interfaces/IGoatVrf.sol";
 import {ITeamVault} from "./interfaces/ITeamVault.sol";
 
-/// @title TimeTicket (Unlimited Mode)
+/// @title TimeTicket (Upgradeable)
 /// @notice On-chain 15-minute round-based FOMO game where buying tickets extends
 ///         the countdown. The last buyer before expiry becomes the round winner.
 ///         Rounds are funded by user ticket payments and may receive additional
@@ -22,7 +23,12 @@ import {ITeamVault} from "./interfaces/ITeamVault.sol";
 /// - Claims: user rewards are not distributed during settlement; users claim later
 ///   via `claim(roundId, rewardTypes)` to avoid griefing/DoS on transfers.
 /// - Payments: native ETH only. `buy` is payable and refunds overpayment.
-contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
+contract TimeTicketUpgradeable is
+    IRandomnessCallback,
+    Initializable,
+    OwnableUpgradeable,
+    ReentrancyGuardUpgradeable
+{
     event RoundStarted(
         uint256 indexed roundId,
         uint64 startTime,
@@ -75,24 +81,24 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
     uint256 public priceIncrementPerPurchase;
     address public vault;
     address public feeRecipient;
-    uint32 public airdropWinnersCount = 5;
+    uint32 public airdropWinnersCount;
 
     // VRF configuration
     address public vrfCoordinator;
     IGoatVRF public goatVrf;
     mapping(uint256 => uint256) public requestToRound;
     mapping(uint256 => uint256) public roundToRequest;
-    uint256 public defaultCallbackGas = 120000;
-    uint256 public defaultMaxAllowedGasPrice = 50 gwei;
+    uint256 public defaultCallbackGas;
+    uint256 public defaultMaxAllowedGasPrice;
 
     // Distribution configuration (BPS = parts per 10_000)
-    uint16 public fundingRatioMinBps = 500; // min 5%
-    uint16 public fundingRatioRangeBps = 501; // range span for modulo (inclusive of +500)
-    uint16 public winnerBps = 4800; // 48%
-    uint16 public dividendBps = 2000; // 20%
-    uint16 public airdropBps = 1000; // 10%
-    uint16 public teamBps = 1200; // 12%
-    uint16 public carryBps = 1000; // 10%
+    uint16 public fundingRatioMinBps;
+    uint16 public fundingRatioRangeBps;
+    uint16 public winnerBps;
+    uint16 public dividendBps;
+    uint16 public airdropBps;
+    uint16 public teamBps;
+    uint16 public carryBps;
 
     struct RoundMeta {
         uint64 startTime;
@@ -126,26 +132,52 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
     mapping(address => uint256) public totalClaimed;
 
     // Expiry and sweeping
-    uint256 public claimExpiryRounds = 24;
+    uint256 public claimExpiryRounds;
     mapping(uint256 => bool) public sweptExpired;
 
-    constructor(
+    // Storage gap for upgradeable contracts
+    uint256[50] private __gap;
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(
         uint256 _ticketPrice,
         address _vault,
         uint256 _extensionPerTicket,
         uint32 _airdropWinnersCount
-    ) Ownable(msg.sender) {
+    ) public initializer {
         require(_vault != address(0), "VAULT_ZERO");
+
+        __Ownable_init(msg.sender);
+        __ReentrancyGuard_init();
+
         startingTicketPrice = _ticketPrice;
         ticketPrice = startingTicketPrice;
         vault = _vault;
         extensionPerTicket = _extensionPerTicket == 0
-            ? extensionPerTicket
+            ? 180
             : _extensionPerTicket;
         airdropWinnersCount = _airdropWinnersCount == 0
-            ? airdropWinnersCount
+            ? 5
             : _airdropWinnersCount;
         feeRecipient = msg.sender;
+
+        // Initialize default distribution values
+        fundingRatioMinBps = 500; // 5%
+        fundingRatioRangeBps = 501; // range span
+        winnerBps = 4800; // 48%
+        dividendBps = 2000; // 20%
+        airdropBps = 1000; // 10%
+        teamBps = 1200; // 12%
+        carryBps = 1000; // 10%
+
+        // Initialize other defaults
+        claimExpiryRounds = 24;
+        defaultCallbackGas = 120000;
+        defaultMaxAllowedGasPrice = 50 gwei;
 
         _startNextRound(0);
     }
@@ -646,6 +678,7 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
     function _getFundingRatio(uint256 roundId) internal view returns (uint16) {
         uint256 rnd = roundRandomness[roundId];
         require(rnd > 0, "NO_RANDOMNESS");
+        require(fundingRatioRangeBps > 0, "INVALID_FUNDING_RANGE");
         return uint16(fundingRatioMinBps + (rnd % fundingRatioRangeBps));
     }
 
