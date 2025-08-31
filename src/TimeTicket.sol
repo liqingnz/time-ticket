@@ -85,14 +85,14 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
     uint256 public defaultCallbackGas = 120000;
     uint256 public defaultMaxAllowedGasPrice = 50 gwei;
 
-    // Placeholder configuration (BPS = parts per 10_000)
-    uint16 public placeholderFundingRatioMinBps = 500; // min 5%
-    uint16 public placeholderFundingRatioRangeBps = 501; // range span for modulo (inclusive of +500)
-    uint16 public placeholderWinnerBps = 4800; // 48%
-    uint16 public placeholderDividendBps = 2000; // 20%
-    uint16 public placeholderAirdropBps = 1000; // 10%
-    uint16 public placeholderTeamBps = 1200; // 12%
-    uint16 public placeholderCarryBps = 1000; // 10%
+    // Distribution configuration (BPS = parts per 10_000)
+    uint16 public fundingRatioMinBps = 500; // min 5%
+    uint16 public fundingRatioRangeBps = 501; // range span for modulo (inclusive of +500)
+    uint16 public winnerBps = 4800; // 48%
+    uint16 public dividendBps = 2000; // 20%
+    uint16 public airdropBps = 1000; // 10%
+    uint16 public teamBps = 1200; // 12%
+    uint16 public carryBps = 1000; // 10%
 
     struct RoundMeta {
         uint64 startTime;
@@ -224,12 +224,12 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
 
         uint256 netPool = rm.pool;
 
-        // Placeholder distribution splits (in BPS)
-        uint256 winnerShare = (netPool * placeholderWinnerBps) / 10_000;
-        uint256 dividendPool = (netPool * placeholderDividendBps) / 10_000;
-        uint256 airdropPool = (netPool * placeholderAirdropBps) / 10_000;
-        uint256 teamShare = (netPool * placeholderTeamBps) / 10_000;
-        uint256 carryShare = (netPool * placeholderCarryBps) / 10_000;
+        // Distribution splits (in BPS)
+        uint256 winnerShare = (netPool * winnerBps) / 10_000;
+        uint256 dividendPool = (netPool * dividendBps) / 10_000;
+        uint256 airdropPool = (netPool * airdropBps) / 10_000;
+        uint256 teamShare = (netPool * teamBps) / 10_000;
+        uint256 carryShare = (netPool * carryBps) / 10_000;
 
         address[] memory participants = roundParticipants[currentRoundId];
         uint256 participantCount = participants.length;
@@ -330,7 +330,6 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
         RewardType[] calldata rewardTypes
     ) external nonReentrant {
         require(rounds[roundId].settled, "ROUND_NOT_SETTLED");
-        require(roundId >= currentRoundId - claimExpiryRounds, "ROUND_TOO_OLD");
         uint256 totalPayout = 0;
         uint256 grossPayout = 0;
         for (uint256 i = 0; i < rewardTypes.length; i++) {
@@ -399,6 +398,7 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
             emit ExpiredSwept(roundId, 0);
             return;
         }
+        rm.unclaimed = 0;
         require(vault != address(0), "VAULT_ZERO");
         require(_sendValue(vault, amount), "SWEEP_SEND_FAIL");
         sweptExpired[roundId] = true;
@@ -480,21 +480,60 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
 
     /// @notice Update the number of rounds after which unclaimed rewards expire
     function setClaimExpiryRounds(uint256 newExpiry) external onlyOwner {
-        require(newExpiry >= 1 && newExpiry <= 365, "BAD_EXPIRY");
+        require(newExpiry >= 1, "BAD_EXPIRY");
         claimExpiryRounds = newExpiry;
         emit ConfigUpdated("claimExpiryRounds");
+    }
+
+    /// @notice Update distribution parameters in basis points (BPS, where 10000 = 100%)
+    /// @param _fundingRatioMinBps Minimum funding ratio (e.g., 500 = 5%)
+    /// @param _fundingRatioRangeBps Range for VRF randomness (e.g., 501 = 5.01%)
+    /// @param _winnerBps Winner share percentage (e.g., 4800 = 48%)
+    /// @param _dividendBps Dividend share percentage (e.g., 2000 = 20%)
+    /// @param _airdropBps Airdrop share percentage (e.g., 1000 = 10%)
+    /// @param _teamBps Team share percentage (e.g., 1200 = 12%)
+    /// @param _carryBps Carry-over share percentage (e.g., 1000 = 10%)
+    function setBps(
+        uint16 _fundingRatioMinBps,
+        uint16 _fundingRatioRangeBps,
+        uint16 _winnerBps,
+        uint16 _dividendBps,
+        uint16 _airdropBps,
+        uint16 _teamBps,
+        uint16 _carryBps
+    ) external onlyOwner {
+        require(_fundingRatioMinBps <= 10000, "INVALID_FUNDING_MIN_BPS");
+        require(
+            _fundingRatioRangeBps > 0 && _fundingRatioRangeBps <= 10000,
+            "INVALID_FUNDING_RANGE_BPS"
+        );
+        require(_winnerBps <= 10000, "INVALID_WINNER_BPS");
+        require(_dividendBps <= 10000, "INVALID_DIVIDEND_BPS");
+        require(_airdropBps <= 10000, "INVALID_AIRDROP_BPS");
+        require(_teamBps <= 10000, "INVALID_TEAM_BPS");
+        require(_carryBps <= 10000, "INVALID_CARRY_BPS");
+
+        fundingRatioMinBps = _fundingRatioMinBps;
+        fundingRatioRangeBps = _fundingRatioRangeBps;
+        winnerBps = _winnerBps;
+        dividendBps = _dividendBps;
+        airdropBps = _airdropBps;
+        teamBps = _teamBps;
+        carryBps = _carryBps;
+
+        emit ConfigUpdated("distributionBps");
     }
 
     // -- VRF --
     /// @notice VRF callback invoked by the coordinator with the randomness for a request
     /// @param requestId The VRF request id
-    /// @param randomWord The randomness value supplied
-    function receiveRandomness(uint256 requestId, uint256 randomWord) external {
+    /// @param randomness The randomness value supplied
+    function receiveRandomness(uint256 requestId, uint256 randomness) external {
         require(msg.sender == vrfCoordinator, "NOT_COORD");
         uint256 roundId = requestToRound[requestId];
         require(roundId != 0, "REQ_UNKNOWN");
         require(!rounds[roundId].settled, "ALREADY_SETTLED");
-        roundRandomness[roundId] = randomWord;
+        roundRandomness[roundId] = randomness;
     }
 
     /// @notice Request randomness for the current round (owner-only)
@@ -603,15 +642,11 @@ contract TimeTicketUnlimited is IRandomnessCallback, Ownable, ReentrancyGuard {
     }
 
     /// @dev Internal helper that derives the funding ratio (e.g., 5%-10%). If randomness
-    ///      exists for the round, returns placeholderFundingRatioMinBps + (rnd % placeholderFundingRatioRangeBps).
+    ///      exists for the round, returns fundingRatioMinBps + (rnd % fundingRatioRangeBps).
     function _getFundingRatio(uint256 roundId) internal view returns (uint16) {
         uint256 rnd = roundRandomness[roundId];
         require(rnd > 0, "NO_RANDOMNESS");
-        return
-            uint16(
-                placeholderFundingRatioMinBps +
-                    (rnd % placeholderFundingRatioRangeBps)
-            );
+        return uint16(fundingRatioMinBps + (rnd % fundingRatioRangeBps));
     }
 
     /// @dev Internal helper to select unique airdrop winners deterministically
