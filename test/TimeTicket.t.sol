@@ -63,6 +63,9 @@ contract TimeTicketTest is Test {
         // Deploy implementation
         TimeTicketUpgradeable implementation = new TimeTicketUpgradeable();
 
+        // mock VRF (create before initialization)
+        vrf = new MockGoatVRF();
+
         // Deploy proxy with initialization
         UpgradeableProxy proxy = new UpgradeableProxy(
             address(implementation),
@@ -71,8 +74,7 @@ contract TimeTicketTest is Test {
                 TimeTicketUpgradeable.initialize.selector,
                 START_PRICE,
                 address(vault),
-                EXT,
-                3
+                address(vrf)
             )
         );
 
@@ -81,12 +83,12 @@ contract TimeTicketTest is Test {
         ticket.setPriceIncrementPerPurchase(PRICE_INC);
         ticket.setFeeRecipient(feeCollector);
 
+        // Set extension per ticket and airdrop winners count since they're not in initialize anymore
+        ticket.setExtensionPerTicket(EXT);
+        ticket.setAirdropWinnersCount(3);
+
         // authorize funding
         vault.setFunder(address(ticket), true);
-
-        // mock VRF
-        vrf = new MockGoatVRF();
-        ticket.setGoatVrf(address(vrf));
     }
 
     function _seedRandomnessForCurrentRound(uint256 word) internal {

@@ -84,7 +84,6 @@ contract TimeTicketUpgradeable is
     uint32 public airdropWinnersCount;
 
     // VRF configuration
-    address public vrfCoordinator;
     IGoatVRF public goatVrf;
     mapping(uint256 => uint256) public requestToRound;
     mapping(uint256 => uint256) public roundToRequest;
@@ -146,10 +145,10 @@ contract TimeTicketUpgradeable is
     function initialize(
         uint256 _ticketPrice,
         address _vault,
-        uint256 _extensionPerTicket,
-        uint32 _airdropWinnersCount
+        address _goatVrf
     ) public initializer {
         require(_vault != address(0), "VAULT_ZERO");
+        require(_goatVrf != address(0), "VRF_ZERO");
 
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
@@ -157,15 +156,12 @@ contract TimeTicketUpgradeable is
         startingTicketPrice = _ticketPrice;
         ticketPrice = startingTicketPrice;
         vault = _vault;
-        extensionPerTicket = _extensionPerTicket == 0
-            ? 180
-            : _extensionPerTicket;
-        airdropWinnersCount = _airdropWinnersCount == 0
-            ? 5
-            : _airdropWinnersCount;
+        goatVrf = IGoatVRF(_goatVrf);
         feeRecipient = msg.sender;
 
         // Initialize default distribution values
+        extensionPerTicket = 180;
+        airdropWinnersCount = 5;
         fundingRatioMinBps = 500; // 5%
         fundingRatioRangeBps = 501; // range span
         winnerBps = 4800; // 48%
@@ -476,16 +472,10 @@ contract TimeTicketUpgradeable is
         feeRecipient = newRecipient;
         emit ConfigUpdated("feeRecipient");
     }
-    /// @notice Set the VRF coordinator address used to validate callbacks
-    function setVrfCoordinator(address newVrf) external onlyOwner {
-        vrfCoordinator = newVrf;
-        emit ConfigUpdated("vrfCoordinator");
-    }
     /// @notice Set the GOAT VRF contract used for randomness requests
     function setGoatVrf(address newVrf) external onlyOwner {
         require(newVrf != address(0), "ZERO_ADDR");
         goatVrf = IGoatVRF(newVrf);
-        vrfCoordinator = newVrf;
         emit ConfigUpdated("goatVrf");
     }
     /// @notice Update default VRF parameters used for fee estimation and callback gas
@@ -561,7 +551,7 @@ contract TimeTicketUpgradeable is
     /// @param requestId The VRF request id
     /// @param randomness The randomness value supplied
     function receiveRandomness(uint256 requestId, uint256 randomness) external {
-        require(msg.sender == vrfCoordinator, "NOT_COORD");
+        require(msg.sender == address(goatVrf), "NOT_COORD");
         uint256 roundId = requestToRound[requestId];
         require(roundId != 0, "REQ_UNKNOWN");
         require(!rounds[roundId].settled, "ALREADY_SETTLED");
