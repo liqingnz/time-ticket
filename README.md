@@ -172,6 +172,17 @@ function totalClaimed(address user) external view returns (uint256);
 
 **Use Case**: Show user's total historical winnings
 
+#### Get User's Participated Rounds
+
+```solidity
+function getUserParticipatedRounds(address user) external view returns (uint256[] memory);
+```
+
+**Use Case**: Get complete participation history for a user
+
+- Returns array of round IDs where user bought tickets
+- Useful for displaying user's game history and potential claims
+
 ### Reward Checking
 
 #### Check Claim Status
@@ -278,6 +289,9 @@ uint16 public dividendBps;  // Participant dividends (default: 2000 = 20%)
 uint16 public airdropBps;   // Airdrop pool (default: 1000 = 10%)
 uint16 public teamBps;      // Team share (default: 1200 = 12%)
 uint16 public carryBps;     // Carry to next round (default: 1000 = 10%)
+
+// User participation tracking
+mapping(address => uint256[]) public userRounds; // All rounds a user participated in
 
 // VRF funding configuration
 uint16 public fundingRatioMinBps;   // Min funding ratio (default: 500 = 5%)

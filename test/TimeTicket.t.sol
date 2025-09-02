@@ -1075,4 +1075,57 @@ contract TimeTicketTest is Test {
         vm.expectRevert();
         ticket.setBps(300, 1000, 5000, 1500, 800, 1500, 500);
     }
+
+    function testUserRoundsTracking() public {
+        // Give users some ETH
+        vm.deal(alice, 10 ether);
+        vm.deal(bob, 10 ether);
+
+        // Initially, users should have participated in no rounds
+        uint256[] memory aliceRounds = ticket.getUserParticipatedRounds(alice);
+        uint256[] memory bobRounds = ticket.getUserParticipatedRounds(bob);
+        assertEq(aliceRounds.length, 0);
+        assertEq(bobRounds.length, 0);
+
+        // Alice buys tickets in round 1
+        vm.prank(alice);
+        ticket.buy{value: START_PRICE}(
+            1,
+            START_PRICE,
+            block.timestamp + 10 minutes
+        );
+
+        // Check Alice's rounds
+        aliceRounds = ticket.getUserParticipatedRounds(alice);
+        assertEq(aliceRounds.length, 1);
+        assertEq(aliceRounds[0], 1);
+
+        // Bob also buys tickets in round 1
+        uint256 priceForBob = ticket.getTicketPrice();
+        vm.prank(bob);
+        ticket.buy{value: priceForBob}(
+            1,
+            priceForBob,
+            block.timestamp + 10 minutes
+        );
+
+        // Check Bob's rounds
+        bobRounds = ticket.getUserParticipatedRounds(bob);
+        assertEq(bobRounds.length, 1);
+        assertEq(bobRounds[0], 1);
+
+        // Alice buys more tickets in round 1 (should not duplicate)
+        uint256 currentPrice = ticket.getTicketPrice();
+        vm.prank(alice);
+        ticket.buy{value: currentPrice}(
+            1,
+            currentPrice,
+            block.timestamp + 10 minutes
+        );
+
+        // Alice should still only show round 1 once
+        aliceRounds = ticket.getUserParticipatedRounds(alice);
+        assertEq(aliceRounds.length, 1);
+        assertEq(aliceRounds[0], 1);
+    }
 }

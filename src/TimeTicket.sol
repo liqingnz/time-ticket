@@ -117,6 +117,7 @@ contract TimeTicketUpgradeable is
     mapping(uint256 => address[]) private roundParticipants;
     mapping(uint256 => mapping(address => bool)) private isParticipantInRound;
     mapping(uint256 => mapping(address => uint256)) public ticketsOf;
+    mapping(address => uint256[]) public userRounds;
 
     // Claim bookkeeping
     mapping(uint256 => uint256) public winnerShareOfRound;
@@ -210,6 +211,7 @@ contract TimeTicketUpgradeable is
         if (!isParticipantInRound[currentRoundId][msg.sender]) {
             isParticipantInRound[currentRoundId][msg.sender] = true;
             roundParticipants[currentRoundId].push(msg.sender);
+            userRounds[msg.sender].push(currentRoundId);
         }
         ticketsOf[currentRoundId][msg.sender] += quantity;
         // After each paid purchase, increase the ticket price by configured increment
@@ -635,6 +637,13 @@ contract TimeTicketUpgradeable is
         address user
     ) external view returns (uint256) {
         return ticketsOf[currentRoundId][user];
+    }
+
+    /// @notice Get all rounds that a user has participated in
+    function getUserParticipatedRounds(
+        address user
+    ) external view returns (uint256[] memory) {
+        return userRounds[user];
     }
 
     /// @notice Get the participant addresses for a given round (may be large)
