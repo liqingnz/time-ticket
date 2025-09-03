@@ -214,10 +214,6 @@ contract TimeTicketUpgradeable is
             userRounds[msg.sender].push(currentRoundId);
         }
         ticketsOf[currentRoundId][msg.sender] += quantity;
-        // After each paid purchase, increase the ticket price by configured increment
-        unchecked {
-            ticketPrice = ticketPrice + priceIncrementPerPurchase;
-        }
         emit TicketPurchased(
             currentRoundId,
             msg.sender,
@@ -225,6 +221,10 @@ contract TimeTicketUpgradeable is
             ticketPrice,
             newEnd
         );
+        // After each paid purchase, increase the ticket price by configured increment
+        unchecked {
+            ticketPrice = ticketPrice + priceIncrementPerPurchase;
+        }
     }
 
     /// @notice Settle the current round after it ends. No user transfers occur here; all
