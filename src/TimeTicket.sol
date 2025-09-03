@@ -216,15 +216,17 @@ contract TimeTicketUpgradeable is
 
         if (participantCount > 0) {
             // Winner accounting (record-only)
-            if (winnerShare > 0) {
+            bool hasWinner = winnerShare > 0;
+            if (hasWinner) {
                 rm.winner = rm.lastBuyer;
                 winnerShareOfRound[currentRoundId] = winnerShare;
             }
 
             // Airdrop accounting (record-only) - exclude final winner from airdrop selection
             uint256 winnersCount = airdropWinnersCount;
-            if ((participantCount - 1) < winnersCount) {
-                winnersCount = participantCount - 1;
+            uint256 airdropCandidates = participantCount - (hasWinner ? 1 : 0);
+            if (airdropCandidates < winnersCount) {
+                winnersCount = airdropCandidates;
             }
             if (airdropPool > 0) {
                 if (winnersCount > 0) {
@@ -234,7 +236,7 @@ contract TimeTicketUpgradeable is
                         participants,
                         winnersCount,
                         currentRoundId,
-                        rm.winner // Pass final winner to exclude from selection
+                        hasWinner ? rm.winner : address(0) // Exclude winner only if any
                     );
                     airdropWinners[currentRoundId] = selected;
                     for (uint256 i = 0; i < selected.length; i++) {
@@ -251,7 +253,7 @@ contract TimeTicketUpgradeable is
 
             // Dividend accounting (record-only)
             // Calculate eligible dividend participants (exclude final winner and airdrop winners)
-            uint256 eligibleDividendParticipants = participantCount - 1;
+            uint256 eligibleDividendParticipants = participantCount - (hasWinner ? 1 : 0);
             if (winnersCount > 0) {
                 eligibleDividendParticipants -= winnersCount;
             }
@@ -272,11 +274,12 @@ contract TimeTicketUpgradeable is
 
             // Snapshot total unclaimed gross for this round
             uint256 airdropsClaimable = airdropPerWinner[currentRoundId] *
-                winnersCount;
+                airdropWinners[currentRoundId].length;
             uint256 dividendsClaimable = dividendPerParticipant[
                 currentRoundId
             ] * eligibleDividendParticipants;
-            rm.unclaimed = winnerShare + dividendsClaimable + airdropsClaimable;
+            uint256 winnerClaimable = hasWinner ? winnerShare : 0;
+            rm.unclaimed = winnerClaimable + dividendsClaimable + airdropsClaimable;
         } else {
             undistributed = netPool - teamShare - carryShare;
         }
@@ -643,23 +646,52 @@ contract TimeTicketUpgradeable is
         uint256 roundId,
         address finalWinner
     ) internal view returns (address[] memory selectedAddrs) {
-        uint256 participantCount = participants.length;
-        if (participantCount == 0 || winnersCount == 0) return new address[](0);
+        uint256 n = participants.length;
+        if (n == 0 || winnersCount == 0) return new address[](0);
         uint256 seed = roundRandomness[roundId];
         require(seed > 0, "NO_RANDOMNESS");
-        bool[] memory selected = new bool[](participantCount);
-        uint256 selectedCount = 0;
-        uint256 tries = 0;
-        selectedAddrs = new address[](winnersCount);
-        while (selectedCount < winnersCount && tries < winnersCount * 10) {
-            uint256 idx = uint256(keccak256(abi.encodePacked(seed, tries))) %
-                participantCount;
-            if (!selected[idx] && participants[idx] != finalWinner) {
-                selected[idx] = true;
-                selectedAddrs[selectedCount] = participants[idx];
-                selectedCount++;
+
+        // Find finalWinner index if provided
+        int256 winnerIdx = -1;
+        if (finalWinner != address(0)) {
+            for (uint256 i = 0; i < n; i++) {
+                if (participants[i] == finalWinner) {
+                    winnerIdx = int256(i);
+                    break;
+                }
             }
-            tries++;
+        }
+
+        // If there is a winner, move them to the last slot and exclude it from shuffling
+        uint256 upperBound = n; // exclusive upper bound during selection
+        if (winnerIdx >= 0) {
+            uint256 wi = uint256(winnerIdx);
+            if (wi != n - 1) {
+                address tmp = participants[n - 1];
+                participants[n - 1] = participants[wi];
+                participants[wi] = tmp;
+            }
+            upperBound = n - 1; // exclude last index (winner)
+        }
+
+        // Partial Fisher–Yates: pick first winnersCount by swapping from [i, upperBound)
+        for (uint256 i = 0; i < winnersCount; i++) {
+            // advance seed deterministically per step
+            seed = uint256(keccak256(abi.encodePacked(seed, i)));
+            uint256 range = upperBound - i; // remaining candidates
+            uint256 j = i + (seed % range); // j in [i, upperBound)
+            // swap participants[i] and participants[j]
+            if (j != i) {
+                address t = participants[i];
+                participants[i] = participants[j];
+                participants[j] = t;
+            }
+        }
+
+        // Collect first winnersCount addresses as winners
+        selectedAddrs = new address[](winnersCount);
+        for (uint256 k = 0; k < winnersCount; k++) {
+            selectedAddrs[k] = participants[k];
         }
     }
 
