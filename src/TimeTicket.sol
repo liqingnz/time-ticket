@@ -65,7 +65,7 @@ contract TimeTicketUpgradeable is
     mapping(uint256 => RoundMeta) public rounds;
     mapping(uint256 => uint256) public roundRandomness;
     mapping(uint256 => address[]) private roundParticipants;
-    mapping(uint256 => mapping(address => bool)) private isParticipantInRound;
+    mapping(uint256 => mapping(address => uint256)) private participantIndex;
     mapping(uint256 => mapping(address => uint256)) public ticketsOf;
     mapping(address => uint256[]) public userRounds;
 
@@ -158,10 +158,32 @@ contract TimeTicketUpgradeable is
         rm.pool += cost;
         rm.totalTickets += quantity;
         rm.lastBuyer = msg.sender;
-        if (!isParticipantInRound[currentRoundId][msg.sender]) {
-            isParticipantInRound[currentRoundId][msg.sender] = true;
+        uint256 currentIndex = participantIndex[currentRoundId][msg.sender];
+        if (currentIndex == 0) {
+            // New participant: add to array and store 1-based index
             roundParticipants[currentRoundId].push(msg.sender);
+            participantIndex[currentRoundId][msg.sender] = roundParticipants[
+                currentRoundId
+            ].length;
             userRounds[msg.sender].push(currentRoundId);
+        } else {
+            // Existing participant: move to end of array for winner optimization
+            address[] storage participants = roundParticipants[currentRoundId];
+            uint256 lastIndex = participants.length - 1;
+            uint256 userIndex = currentIndex - 1; // Convert to 0-based
+
+            if (userIndex != lastIndex) {
+                // Swap current user with last participant
+                address lastParticipant = participants[lastIndex];
+                participants[userIndex] = lastParticipant;
+                participants[lastIndex] = msg.sender;
+
+                // Update the swapped participant's index
+                participantIndex[currentRoundId][
+                    lastParticipant
+                ] = currentIndex;
+                participantIndex[currentRoundId][msg.sender] = lastIndex + 1;
+            }
         }
         ticketsOf[currentRoundId][msg.sender] += quantity;
         emit TicketPurchased(
@@ -253,7 +275,8 @@ contract TimeTicketUpgradeable is
 
             // Dividend accounting (record-only)
             // Calculate eligible dividend participants (exclude final winner and airdrop winners)
-            uint256 eligibleDividendParticipants = participantCount - (hasWinner ? 1 : 0);
+            uint256 eligibleDividendParticipants = participantCount -
+                (hasWinner ? 1 : 0);
             if (winnersCount > 0) {
                 eligibleDividendParticipants -= winnersCount;
             }
@@ -279,7 +302,10 @@ contract TimeTicketUpgradeable is
                 currentRoundId
             ] * eligibleDividendParticipants;
             uint256 winnerClaimable = hasWinner ? winnerShare : 0;
-            rm.unclaimed = winnerClaimable + dividendsClaimable + airdropsClaimable;
+            rm.unclaimed =
+                winnerClaimable +
+                dividendsClaimable +
+                airdropsClaimable;
         } else {
             undistributed = netPool - teamShare - carryShare;
         }
@@ -348,7 +374,7 @@ contract TimeTicketUpgradeable is
             } else if (rt == RewardType.Dividend) {
                 if (
                     !claimedDividend[roundId][msg.sender] &&
-                    isParticipantInRound[roundId][msg.sender] &&
+                    participantIndex[roundId][msg.sender] > 0 &&
                     rounds[roundId].winner != msg.sender && // Exclude final winner
                     !isAirdropWinner[roundId][msg.sender] // Exclude airdrop winners
                 ) {
@@ -651,27 +677,18 @@ contract TimeTicketUpgradeable is
         uint256 seed = roundRandomness[roundId];
         require(seed > 0, "NO_RANDOMNESS");
 
-        // Find finalWinner index if provided
-        int256 winnerIdx = -1;
+        // Optimization: winner is always at the last index due to buy() logic
+        // No need to search for winner index - just exclude last element if winner exists
+        uint256 upperBound = n;
         if (finalWinner != address(0)) {
-            for (uint256 i = 0; i < n; i++) {
-                if (participants[i] == finalWinner) {
-                    winnerIdx = int256(i);
-                    break;
-                }
-            }
+            // Winner should be at last index, but verify for safety
+            require(participants[n - 1] == finalWinner, "WINNER_NOT_AT_END");
+            upperBound = n - 1; // exclude last index (winner)
         }
 
-        // If there is a winner, move them to the last slot and exclude it from shuffling
-        uint256 upperBound = n; // exclusive upper bound during selection
-        if (winnerIdx >= 0) {
-            uint256 wi = uint256(winnerIdx);
-            if (wi != n - 1) {
-                address tmp = participants[n - 1];
-                participants[n - 1] = participants[wi];
-                participants[wi] = tmp;
-            }
-            upperBound = n - 1; // exclude last index (winner)
+        // Ensure we don't try to select more winners than available candidates
+        if (winnersCount > upperBound) {
+            winnersCount = upperBound;
         }
 
         // Partial Fisher–Yates: pick first winnersCount by swapping from [i, upperBound)
