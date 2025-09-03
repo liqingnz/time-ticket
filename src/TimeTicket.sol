@@ -60,6 +60,12 @@ contract TimeTicketUpgradeable is
         uint256 teamAmount,
         uint256 carryAmount
     );
+    event Claimed(
+        uint256 indexed roundId,
+        uint256 grossPayout,
+        RewardType[] rewardTypes,
+        address indexed user
+    );
     event ConfigUpdated(string key);
     event ExpiredSwept(uint256 indexed roundId, uint256 amount);
 
@@ -410,6 +416,7 @@ contract TimeTicketUpgradeable is
         }
         totalClaimed[msg.sender] += totalPayout;
         require(_sendValue(msg.sender, totalPayout), "CLAIM_SEND_FAIL");
+        emit Claimed(roundId, grossPayout, rewardTypes, msg.sender);
     }
 
     /// @notice Manually sweep an expired round's unclaimed rewards to the vault
