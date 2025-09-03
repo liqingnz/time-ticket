@@ -128,6 +128,9 @@ contract TimeTicketTest is Test {
     }
 
     function testSettleAndClaimsAndAutoSweep() public {
+        // Set airdrop winners to 1 for exclusive reward testing
+        ticket.setAirdropWinnersCount(1);
+
         uint256 deadline = block.timestamp + 1 hours;
         // Three buys: alice, bob, carol (carol is winner)
         vm.prank(alice);
@@ -157,9 +160,6 @@ contract TimeTicketTest is Test {
         uint256 winnerGross = ticket.winnerShareOfRound(roundId);
         uint256 divPerUser = ticket.dividendPerParticipant(roundId);
         uint256 airPerWinner = ticket.airdropPerWinner(roundId);
-        bool aliceAir = ticket.isAirdropWinner(roundId, alice);
-        bool bobAir = ticket.isAirdropWinner(roundId, bob);
-        bool carolAir = ticket.isAirdropWinner(roundId, carol);
 
         // Winner claim
         uint256 feeBefore = feeCollector.balance;
@@ -174,30 +174,26 @@ contract TimeTicketTest is Test {
         assertEq(feeAfter - feeBefore, feeExpected);
         assertEq(carolAfter - carolBefore, winnerGross - feeExpected);
 
-        // Dividend claim (alice)
+        // With exclusive rewards: Alice gets airdrop, Bob gets dividend
+        // Airdrop claim (Alice - she's the airdrop winner)
         uint256 aliceBefore = alice.balance;
         vm.prank(alice);
         rts = new ITimeTicket.RewardType[](1);
-        rts[0] = ITimeTicket.RewardType.Dividend;
+        rts[0] = ITimeTicket.RewardType.Airdrop;
         ticket.claim(roundId, rts);
         uint256 aliceAfter = alice.balance;
-        uint256 feeDiv = (divPerUser * ticket.FEE_PPM()) / 1_000_000;
-        assertEq(aliceAfter - aliceBefore, divPerUser - feeDiv);
+        uint256 feeAir = (airPerWinner * ticket.FEE_PPM()) / 1_000_000;
+        assertEq(aliceAfter - aliceBefore, airPerWinner - feeAir);
 
-        // Airdrop claim (any known winner)
-        address airWinner = aliceAir
-            ? alice
-            : (bobAir ? bob : (carolAir ? carol : address(0)));
-        if (airWinner != address(0)) {
-            uint256 wBefore = airWinner.balance;
-            vm.prank(airWinner);
-            rts = new ITimeTicket.RewardType[](1);
-            rts[0] = ITimeTicket.RewardType.Airdrop;
-            ticket.claim(roundId, rts);
-            uint256 wAfter = airWinner.balance;
-            uint256 feeAir = (airPerWinner * ticket.FEE_PPM()) / 1_000_000;
-            assertEq(wAfter - wBefore, airPerWinner - feeAir);
-        }
+        // Dividend claim (Bob - he's NOT the winner and NOT an airdrop winner)
+        uint256 bobBefore = bob.balance;
+        vm.prank(bob);
+        rts = new ITimeTicket.RewardType[](1);
+        rts[0] = ITimeTicket.RewardType.Dividend;
+        ticket.claim(roundId, rts);
+        uint256 bobAfter = bob.balance;
+        uint256 feeDiv = (divPerUser * ticket.FEE_PPM()) / 1_000_000;
+        assertEq(bobAfter - bobBefore, divPerUser - feeDiv);
 
         // Auto-sweep after expiry rounds: advance rounds and settle quickly
         // Make two quick empty rounds to trigger autosweep (claimExpiryRounds default is 24,

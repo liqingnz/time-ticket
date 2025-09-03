@@ -96,10 +96,14 @@ interface ITimeTicket {
     // ============ ENUMS ============
 
     /// @notice Types of rewards that can be claimed
+    /// @dev Rewards are EXCLUSIVE - users can only claim ONE type per round:
+    ///      - Winner: Final winner gets 48% of net pool
+    ///      - Airdrop: Random winners get 10% split (excludes final winner)
+    ///      - Dividend: All other participants get 20% split (excludes winner & airdrop winners)
     enum RewardType {
-        Winner, // Winner reward (48% of net pool)
-        Dividend, // Participant dividend (20% split among all participants)
-        Airdrop // Airdrop reward (10% split among random winners)
+        Winner, // Winner reward (48% of net pool) - EXCLUSIVE
+        Dividend, // Participant dividend (20% split) - EXCLUSIVE to non-winners/non-airdrop
+        Airdrop // Airdrop reward (10% split) - EXCLUSIVE to non-winners
     }
 
     // ============ STRUCTS ============

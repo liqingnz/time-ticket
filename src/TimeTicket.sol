@@ -10,13 +10,13 @@ import {ITeamVault} from "./interfaces/ITeamVault.sol";
 import {ITimeTicket} from "./interfaces/ITimeTicket.sol";
 
 /// @title TimeTicket (Upgradeable)
-/// @notice On-chain 15-minute round-based FOMO game where buying tickets extends
+/// @notice On-chain 60-minute round-based FOMO game where buying tickets extends
 ///         the countdown. The last buyer before expiry becomes the round winner.
 ///         Rounds are funded by user ticket payments and may receive additional
 ///         funding from a team vault using a VRF-derived ratio.
 ///
 /// Key mechanics
-/// - Rounds: 15-minute base duration; each ticket extends by `extensionPerTicket`.
+/// - Rounds: 60-minute base duration; each ticket extends by `extensionPerTicket`.
 /// - Fees: 0.001% charged at claim time (per payout).
 /// - Distribution (from net pool): 48% winner, 20% dividends (equal split),
 ///   10% airdrop (random winners), 12% team (sent to `vault`), 10% carry.
@@ -239,10 +239,10 @@ contract TimeTicketUpgradeable is
             }
         }
 
-        // Airdrop accounting (record-only)
+        // Airdrop accounting (record-only) - exclude final winner from airdrop selection
         uint256 winnersCount = airdropWinnersCount;
-        if (participantCount < winnersCount) {
-            winnersCount = uint32(participantCount);
+        if (participantCount > 0 && (participantCount - 1) < winnersCount) {
+            winnersCount = participantCount - 1;
         }
         if (airdropPool > 0) {
             if (winnersCount > 0) {
@@ -251,7 +251,8 @@ contract TimeTicketUpgradeable is
                 address[] memory selected = _selectAirdropWinners(
                     participants,
                     winnersCount,
-                    currentRoundId
+                    currentRoundId,
+                    rm.winner // Pass final winner to exclude from selection
                 );
                 airdropWinners[currentRoundId] = selected;
                 for (uint256 i = 0; i < selected.length; i++) {
@@ -266,10 +267,20 @@ contract TimeTicketUpgradeable is
             }
         }
 
+        // Calculate eligible dividend participants (exclude final winner and airdrop winners)
+        uint256 eligibleDividendParticipants = participantCount;
+        if (rm.winner != address(0)) {
+            eligibleDividendParticipants -= 1; // Exclude final winner
+        }
+        if (airdropWinners[currentRoundId].length > 0) {
+            eligibleDividendParticipants -= airdropWinners[currentRoundId]
+                .length; // Exclude airdrop winners
+        }
+
         // Snapshot total unclaimed gross for this round
         uint256 winnerClaimable = rm.winner == address(0) ? 0 : winnerShare;
         uint256 dividendsClaimable = dividendPerParticipant[currentRoundId] *
-            participantCount;
+            eligibleDividendParticipants;
         uint256 airdropsClaimable = airdropPerWinner[currentRoundId] *
             airdropWinners[currentRoundId].length;
         rm.unclaimed = winnerClaimable + dividendsClaimable + airdropsClaimable;
@@ -327,7 +338,9 @@ contract TimeTicketUpgradeable is
             } else if (rt == RewardType.Dividend) {
                 if (
                     !claimedDividend[roundId][msg.sender] &&
-                    isParticipantInRound[roundId][msg.sender]
+                    isParticipantInRound[roundId][msg.sender] &&
+                    rounds[roundId].winner != msg.sender && // Exclude final winner
+                    !isAirdropWinner[roundId][msg.sender] // Exclude airdrop winners
                 ) {
                     uint256 gross2 = dividendPerParticipant[roundId];
                     require(gross2 > 0, "NO_DIVIDEND");
@@ -623,10 +636,15 @@ contract TimeTicketUpgradeable is
     }
 
     /// @dev Internal helper to select unique airdrop winners deterministically
+    /// @param participants List of all participants
+    /// @param winnersCount Number of airdrop winners to select
+    /// @param roundId Round ID for randomness
+    /// @param finalWinner Address of final winner to exclude from airdrop selection
     function _selectAirdropWinners(
         address[] memory participants,
         uint256 winnersCount,
-        uint256 roundId
+        uint256 roundId,
+        address finalWinner
     ) internal view returns (address[] memory selectedAddrs) {
         uint256 participantCount = participants.length;
         if (participantCount == 0 || winnersCount == 0) return new address[](0);
@@ -639,7 +657,7 @@ contract TimeTicketUpgradeable is
         while (selectedCount < winnersCount && tries < winnersCount * 10) {
             uint256 idx = uint256(keccak256(abi.encodePacked(seed, tries))) %
                 participantCount;
-            if (!selected[idx]) {
+            if (!selected[idx] && participants[idx] != finalWinner) {
                 selected[idx] = true;
                 selectedAddrs[selectedCount] = participants[idx];
                 selectedCount++;
