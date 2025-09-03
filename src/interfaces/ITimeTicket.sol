@@ -66,8 +66,8 @@ interface ITimeTicket {
         address indexed winner,
         uint256 totalPool,
         uint256 winnerAmount,
-        uint256 dividendAmount,
         uint256 airdropAmount,
+        uint256 dividendAmount,
         uint256 teamAmount,
         uint256 carryAmount
     );
@@ -102,8 +102,8 @@ interface ITimeTicket {
     ///      - Dividend: All other participants get 20% split (excludes winner & airdrop winners)
     enum RewardType {
         Winner, // Winner reward (48% of net pool) - EXCLUSIVE
-        Dividend, // Participant dividend (20% split) - EXCLUSIVE to non-winners/non-airdrop
-        Airdrop // Airdrop reward (10% split) - EXCLUSIVE to non-winners
+        Airdrop, // Airdrop reward (10% split) - EXCLUSIVE to non-winners
+        Dividend // Participant dividend (20% split) - EXCLUSIVE to non-winners/non-airdrop
     }
 
     // ============ STRUCTS ============

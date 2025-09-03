@@ -56,8 +56,8 @@ contract TimeTicketUpgradeable is
     uint16 public fundingRatioMinBps;
     uint16 public fundingRatioRangeBps;
     uint16 public winnerBps;
-    uint16 public dividendBps;
     uint16 public airdropBps;
+    uint16 public dividendBps;
     uint16 public teamBps;
     uint16 public carryBps;
 
@@ -116,15 +116,15 @@ contract TimeTicketUpgradeable is
         fundingRatioMinBps = 500; // 5%
         fundingRatioRangeBps = 501; // range span
         winnerBps = 4800; // 48%
-        dividendBps = 2000; // 20%
         airdropBps = 1000; // 10%
+        dividendBps = 2000; // 20%
         teamBps = 1200; // 12%
         carryBps = 1000; // 10%
 
         // Initialize other defaults
         claimExpiryRounds = 24;
         defaultCallbackGas = 120000;
-        defaultMaxAllowedGasPrice = 50 gwei;
+        defaultMaxAllowedGasPrice = 0.006 gwei;
 
         _startNextRound(0);
     }
@@ -299,8 +299,8 @@ contract TimeTicketUpgradeable is
             rm.winner,
             rm.pool,
             winnerShare,
-            dividendPool,
             airdropPool,
+            dividendPool,
             teamShare,
             carryPool
         );
@@ -332,6 +332,16 @@ contract TimeTicketUpgradeable is
                     claimedWinner[roundId] = true;
                     grossPayout += gross;
                 }
+            } else if (rt == RewardType.Airdrop) {
+                if (
+                    !claimedAirdrop[roundId][msg.sender] &&
+                    isAirdropWinner[roundId][msg.sender]
+                ) {
+                    uint256 gross3 = airdropPerWinner[roundId];
+                    require(gross3 > 0, "NO_AIRDROP");
+                    claimedAirdrop[roundId][msg.sender] = true;
+                    grossPayout += gross3;
+                }
             } else if (rt == RewardType.Dividend) {
                 if (
                     !claimedDividend[roundId][msg.sender] &&
@@ -343,16 +353,6 @@ contract TimeTicketUpgradeable is
                     require(gross2 > 0, "NO_DIVIDEND");
                     claimedDividend[roundId][msg.sender] = true;
                     grossPayout += gross2;
-                }
-            } else if (rt == RewardType.Airdrop) {
-                if (
-                    !claimedAirdrop[roundId][msg.sender] &&
-                    isAirdropWinner[roundId][msg.sender]
-                ) {
-                    uint256 gross3 = airdropPerWinner[roundId];
-                    require(gross3 > 0, "NO_AIRDROP");
-                    claimedAirdrop[roundId][msg.sender] = true;
-                    grossPayout += gross3;
                 }
             }
         }
