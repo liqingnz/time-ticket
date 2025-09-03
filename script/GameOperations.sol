@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import {Script, console} from "forge-std/Script.sol";
 import {TimeTicketUpgradeable} from "../src/TimeTicket.sol";
+import {ITimeTicket} from "../src/interfaces/ITimeTicket.sol";
 
 contract GameOperations is Script {
     address public operator;
@@ -371,15 +372,13 @@ contract GameOperations is Script {
             if (!settled) continue;
 
             // Prepare reward types array
-            TimeTicketUpgradeable.RewardType[]
-                memory rewardTypes = new TimeTicketUpgradeable.RewardType[](3);
+            ITimeTicket.RewardType[]
+                memory rewardTypes = new ITimeTicket.RewardType[](3);
             uint256 rewardCount = 0;
 
             // Check winner reward
             if (winner == operator && !timeTicket.claimedWinner(roundId)) {
-                rewardTypes[rewardCount] = TimeTicketUpgradeable
-                    .RewardType
-                    .Winner;
+                rewardTypes[rewardCount] = ITimeTicket.RewardType.Winner;
                 rewardCount++;
             }
 
@@ -388,9 +387,7 @@ contract GameOperations is Script {
                 timeTicket.ticketsOf(roundId, operator) > 0 &&
                 !timeTicket.claimedDividend(roundId, operator)
             ) {
-                rewardTypes[rewardCount] = TimeTicketUpgradeable
-                    .RewardType
-                    .Dividend;
+                rewardTypes[rewardCount] = ITimeTicket.RewardType.Dividend;
                 rewardCount++;
             }
 
@@ -399,17 +396,15 @@ contract GameOperations is Script {
                 timeTicket.isAirdropWinner(roundId, operator) &&
                 !timeTicket.claimedAirdrop(roundId, operator)
             ) {
-                rewardTypes[rewardCount] = TimeTicketUpgradeable
-                    .RewardType
-                    .Airdrop;
+                rewardTypes[rewardCount] = ITimeTicket.RewardType.Airdrop;
                 rewardCount++;
             }
 
             // Claim if any rewards available
             if (rewardCount > 0) {
                 // Resize array to actual reward count
-                TimeTicketUpgradeable.RewardType[]
-                    memory actualRewards = new TimeTicketUpgradeable.RewardType[](
+                ITimeTicket.RewardType[]
+                    memory actualRewards = new ITimeTicket.RewardType[](
                         rewardCount
                     );
                 for (uint256 i = 0; i < rewardCount; i++) {

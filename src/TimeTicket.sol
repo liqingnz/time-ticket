@@ -7,6 +7,7 @@ import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Own
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {IGoatVRF, IRandomnessCallback} from "./interfaces/IGoatVrf.sol";
 import {ITeamVault} from "./interfaces/ITeamVault.sol";
+import {ITimeTicket} from "./interfaces/ITimeTicket.sol";
 
 /// @title TimeTicket (Upgradeable)
 /// @notice On-chain 15-minute round-based FOMO game where buying tickets extends
@@ -24,60 +25,15 @@ import {ITeamVault} from "./interfaces/ITeamVault.sol";
 ///   via `claim(roundId, rewardTypes)` to avoid griefing/DoS on transfers.
 /// - Payments: native ETH only. `buy` is payable and refunds overpayment.
 contract TimeTicketUpgradeable is
+    ITimeTicket,
     IRandomnessCallback,
     Initializable,
     OwnableUpgradeable,
     ReentrancyGuardUpgradeable
 {
-    event RoundStarted(
-        uint256 indexed roundId,
-        uint64 startTime,
-        uint64 endTime,
-        uint256 startingTicketPrice,
-        uint256 carryPool
-    );
-    event TicketPurchased(
-        uint256 indexed roundId,
-        address indexed buyer,
-        uint256 quantity,
-        uint256 ticketPrice,
-        uint64 newEndTime
-    );
-    event FreeTicketClaimed(uint256 indexed roundId, address indexed user);
-    event VaultFunded(
-        uint256 indexed roundId,
-        uint256 desiredAmount,
-        uint256 injectedAmount,
-        uint16 ratioBps
-    );
-    event RoundSettled(
-        uint256 indexed roundId,
-        address indexed winner,
-        uint256 totalPool,
-        uint256 winnerAmount,
-        uint256 dividendAmount,
-        uint256 airdropAmount,
-        uint256 teamAmount,
-        uint256 carryAmount
-    );
-    event Claimed(
-        uint256 indexed roundId,
-        uint256 grossPayout,
-        RewardType[] rewardTypes,
-        address indexed user
-    );
-    event ConfigUpdated(string key);
-    event ExpiredSwept(uint256 indexed roundId, uint256 amount);
-
-    enum RewardType {
-        Winner,
-        Dividend,
-        Airdrop
-    }
-
     uint256 public constant FEE_PPM = 10; // 0.001%
     uint256 public constant BASE_ROUND_DURATION = 60 minutes;
-    uint256 public extensionPerTicket = 180 seconds;
+    uint256 public extensionPerTicket;
 
     // Current ticket price (updates intra-round)
     uint256 public ticketPrice;
@@ -104,18 +60,6 @@ contract TimeTicketUpgradeable is
     uint16 public airdropBps;
     uint16 public teamBps;
     uint16 public carryBps;
-
-    struct RoundMeta {
-        uint64 startTime;
-        uint64 endTime;
-        uint256 pool;
-        uint256 totalTickets;
-        address lastBuyer;
-        bool settled;
-        uint16 fundingRatioBps;
-        address winner;
-        uint256 unclaimed; // total gross claimable remaining (winner + dividends + airdrops)
-    }
 
     uint256 public currentRoundId;
     mapping(uint256 => RoundMeta) public rounds;
@@ -592,16 +536,6 @@ contract TimeTicketUpgradeable is
         );
         requestToRound[requestId] = roundId;
         roundToRequest[roundId] = requestId;
-    }
-
-    /// @notice Convenience method to request randomness with a default deadline
-    function requestRandomnessForCurrentRoundAuto()
-        external
-        onlyOwner
-        returns (uint256 requestId)
-    {
-        uint256 deadline = block.timestamp + 10 minutes;
-        return this.requestRandomnessForCurrentRound(deadline);
     }
 
     // -- Public Getters --

@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import {TimeTicketUpgradeable} from "../src/TimeTicket.sol";
+import {ITimeTicket} from "../src/interfaces/ITimeTicket.sol";
 import {TeamVault} from "../src/TeamVault.sol";
 import {IGoatVRF} from "../src/interfaces/IGoatVrf.sol";
 import {UpgradeableProxy} from "../src/UpgradeableProxy.sol";
@@ -164,9 +165,8 @@ contract TimeTicketTest is Test {
         uint256 feeBefore = feeCollector.balance;
         uint256 carolBefore = carol.balance;
         vm.prank(carol);
-        TimeTicketUpgradeable.RewardType[]
-            memory rts = new TimeTicketUpgradeable.RewardType[](1);
-        rts[0] = TimeTicketUpgradeable.RewardType.Winner;
+        ITimeTicket.RewardType[] memory rts = new ITimeTicket.RewardType[](1);
+        rts[0] = ITimeTicket.RewardType.Winner;
         ticket.claim(roundId, rts);
         uint256 feeAfter = feeCollector.balance;
         uint256 carolAfter = carol.balance;
@@ -177,8 +177,8 @@ contract TimeTicketTest is Test {
         // Dividend claim (alice)
         uint256 aliceBefore = alice.balance;
         vm.prank(alice);
-        rts = new TimeTicketUpgradeable.RewardType[](1);
-        rts[0] = TimeTicketUpgradeable.RewardType.Dividend;
+        rts = new ITimeTicket.RewardType[](1);
+        rts[0] = ITimeTicket.RewardType.Dividend;
         ticket.claim(roundId, rts);
         uint256 aliceAfter = alice.balance;
         uint256 feeDiv = (divPerUser * ticket.FEE_PPM()) / 1_000_000;
@@ -191,8 +191,8 @@ contract TimeTicketTest is Test {
         if (airWinner != address(0)) {
             uint256 wBefore = airWinner.balance;
             vm.prank(airWinner);
-            rts = new TimeTicketUpgradeable.RewardType[](1);
-            rts[0] = TimeTicketUpgradeable.RewardType.Airdrop;
+            rts = new ITimeTicket.RewardType[](1);
+            rts[0] = ITimeTicket.RewardType.Airdrop;
             ticket.claim(roundId, rts);
             uint256 wAfter = airWinner.balance;
             uint256 feeAir = (airPerWinner * ticket.FEE_PPM()) / 1_000_000;
@@ -370,9 +370,8 @@ contract TimeTicketTest is Test {
     }
 
     function testClaimRevertsForNonExistentRound() public {
-        TimeTicketUpgradeable.RewardType[]
-            memory rts = new TimeTicketUpgradeable.RewardType[](1);
-        rts[0] = TimeTicketUpgradeable.RewardType.Winner;
+        ITimeTicket.RewardType[] memory rts = new ITimeTicket.RewardType[](1);
+        rts[0] = ITimeTicket.RewardType.Winner;
 
         vm.prank(alice);
         vm.expectRevert("ROUND_NOT_SETTLED");
@@ -391,9 +390,8 @@ contract TimeTicketTest is Test {
         ticket.settle();
 
         // Bob tries to claim winner reward but isn't the winner
-        TimeTicketUpgradeable.RewardType[]
-            memory rts = new TimeTicketUpgradeable.RewardType[](1);
-        rts[0] = TimeTicketUpgradeable.RewardType.Winner;
+        ITimeTicket.RewardType[] memory rts = new ITimeTicket.RewardType[](1);
+        rts[0] = ITimeTicket.RewardType.Winner;
 
         vm.prank(bob);
         vm.expectRevert("NOTHING_TO_CLAIM");
@@ -412,10 +410,9 @@ contract TimeTicketTest is Test {
         ticket.settle();
 
         // Alice claims both winner and dividend in one transaction
-        TimeTicketUpgradeable.RewardType[]
-            memory rts = new TimeTicketUpgradeable.RewardType[](2);
-        rts[0] = TimeTicketUpgradeable.RewardType.Winner;
-        rts[1] = TimeTicketUpgradeable.RewardType.Dividend;
+        ITimeTicket.RewardType[] memory rts = new ITimeTicket.RewardType[](2);
+        rts[0] = ITimeTicket.RewardType.Winner;
+        rts[1] = ITimeTicket.RewardType.Dividend;
 
         uint256 aliceBalanceBefore = alice.balance;
         vm.prank(alice);
@@ -456,9 +453,8 @@ contract TimeTicketTest is Test {
         // For now, skip the actual claim test due to arithmetic error
         // This seems to be an issue with fee calculation
         // First claim
-        TimeTicketUpgradeable.RewardType[]
-            memory rts = new TimeTicketUpgradeable.RewardType[](1);
-        rts[0] = TimeTicketUpgradeable.RewardType.Winner;
+        ITimeTicket.RewardType[] memory rts = new ITimeTicket.RewardType[](1);
+        rts[0] = ITimeTicket.RewardType.Winner;
 
         vm.prank(alice);
         ticket.claim(roundId, rts);
