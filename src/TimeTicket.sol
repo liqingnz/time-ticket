@@ -203,7 +203,6 @@ contract TimeTicketUpgradeable is
         emit VaultFunded(currentRoundId, desiredInjection, injected, ratioBps);
 
         uint256 netPool = rm.pool;
-
         // Distribution splits (in BPS)
         uint256 winnerShare = (netPool * winnerBps) / 10_000;
         uint256 dividendPool = (netPool * dividendBps) / 10_000;
@@ -215,75 +214,72 @@ contract TimeTicketUpgradeable is
         uint256 participantCount = participants.length;
         uint256 undistributed = 0;
 
-        // Winner accounting (record-only)
-        if (winnerShare > 0) {
-            if (rm.lastBuyer != address(0)) {
+        if (participantCount > 0) {
+            // Winner accounting (record-only)
+            if (winnerShare > 0) {
                 rm.winner = rm.lastBuyer;
                 winnerShareOfRound[currentRoundId] = winnerShare;
-            } else {
-                undistributed += winnerShare;
             }
-        }
 
-        // Dividend accounting (record-only)
-        if (dividendPool > 0) {
-            if (participantCount > 0) {
-                uint256 perUser = dividendPool / participantCount;
-                dividendPerParticipant[currentRoundId] = perUser;
-                uint256 distributed = perUser * participantCount;
-                if (dividendPool > distributed) {
-                    undistributed += (dividendPool - distributed);
+            // Airdrop accounting (record-only) - exclude final winner from airdrop selection
+            uint256 winnersCount = airdropWinnersCount;
+            if ((participantCount - 1) < winnersCount) {
+                winnersCount = participantCount - 1;
+            }
+            if (airdropPool > 0) {
+                if (winnersCount > 0) {
+                    uint256 perWinner = airdropPool / winnersCount;
+                    airdropPerWinner[currentRoundId] = perWinner;
+                    address[] memory selected = _selectAirdropWinners(
+                        participants,
+                        winnersCount,
+                        currentRoundId,
+                        rm.winner // Pass final winner to exclude from selection
+                    );
+                    airdropWinners[currentRoundId] = selected;
+                    for (uint256 i = 0; i < selected.length; i++) {
+                        isAirdropWinner[currentRoundId][selected[i]] = true;
+                    }
+                    uint256 distributed2 = perWinner * selected.length;
+                    if (airdropPool > distributed2) {
+                        undistributed += (airdropPool - distributed2);
+                    }
+                } else {
+                    undistributed += airdropPool;
                 }
-            } else {
-                undistributed += dividendPool;
             }
-        }
 
-        // Airdrop accounting (record-only) - exclude final winner from airdrop selection
-        uint256 winnersCount = airdropWinnersCount;
-        if (participantCount > 0 && (participantCount - 1) < winnersCount) {
-            winnersCount = participantCount - 1;
-        }
-        if (airdropPool > 0) {
+            // Dividend accounting (record-only)
+            // Calculate eligible dividend participants (exclude final winner and airdrop winners)
+            uint256 eligibleDividendParticipants = participantCount - 1;
             if (winnersCount > 0) {
-                uint256 perWinner = airdropPool / winnersCount;
-                airdropPerWinner[currentRoundId] = perWinner;
-                address[] memory selected = _selectAirdropWinners(
-                    participants,
-                    winnersCount,
-                    currentRoundId,
-                    rm.winner // Pass final winner to exclude from selection
-                );
-                airdropWinners[currentRoundId] = selected;
-                for (uint256 i = 0; i < selected.length; i++) {
-                    isAirdropWinner[currentRoundId][selected[i]] = true;
-                }
-                uint256 distributed2 = perWinner * selected.length;
-                if (airdropPool > distributed2) {
-                    undistributed += (airdropPool - distributed2);
-                }
-            } else {
-                undistributed += airdropPool;
+                eligibleDividendParticipants -= winnersCount;
             }
-        }
+            if (dividendPool > 0) {
+                if (eligibleDividendParticipants > 0) {
+                    uint256 perUser = dividendPool /
+                        eligibleDividendParticipants;
+                    dividendPerParticipant[currentRoundId] = perUser;
+                    uint256 distributed = perUser *
+                        eligibleDividendParticipants;
+                    if (dividendPool > distributed) {
+                        undistributed += (dividendPool - distributed);
+                    }
+                } else {
+                    undistributed += dividendPool;
+                }
+            }
 
-        // Calculate eligible dividend participants (exclude final winner and airdrop winners)
-        uint256 eligibleDividendParticipants = participantCount;
-        if (rm.winner != address(0)) {
-            eligibleDividendParticipants -= 1; // Exclude final winner
+            // Snapshot total unclaimed gross for this round
+            uint256 airdropsClaimable = airdropPerWinner[currentRoundId] *
+                winnersCount;
+            uint256 dividendsClaimable = dividendPerParticipant[
+                currentRoundId
+            ] * eligibleDividendParticipants;
+            rm.unclaimed = winnerShare + dividendsClaimable + airdropsClaimable;
+        } else {
+            undistributed = netPool - teamShare - carryShare;
         }
-        if (airdropWinners[currentRoundId].length > 0) {
-            eligibleDividendParticipants -= airdropWinners[currentRoundId]
-                .length; // Exclude airdrop winners
-        }
-
-        // Snapshot total unclaimed gross for this round
-        uint256 winnerClaimable = rm.winner == address(0) ? 0 : winnerShare;
-        uint256 dividendsClaimable = dividendPerParticipant[currentRoundId] *
-            eligibleDividendParticipants;
-        uint256 airdropsClaimable = airdropPerWinner[currentRoundId] *
-            airdropWinners[currentRoundId].length;
-        rm.unclaimed = winnerClaimable + dividendsClaimable + airdropsClaimable;
 
         // Team share: attempt immediate transfer to the vault. If it fails, add to carry.
         if (teamShare > 0) {
@@ -295,6 +291,7 @@ contract TimeTicketUpgradeable is
                 undistributed += teamShare;
             }
         }
+
         uint256 carryPool = carryShare + undistributed;
         rm.settled = true;
         emit RoundSettled(
