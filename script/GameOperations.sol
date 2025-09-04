@@ -25,9 +25,9 @@ contract GameOperations is Script {
 
     function run() public {
         // Default action: buy tickets (can be changed by calling specific functions)
-        // buyTickets();
+        buyTickets();
         // requestRandomness();
-        settleRound();
+        // settleRound();
     }
 
     /// @notice Buy tickets with hardcoded parameters

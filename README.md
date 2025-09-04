@@ -1,3 +1,12 @@
+## Deployed Contracts
+
+> Goat Testnet
+
+| Contract   | Address                                    |
+| ---------- | ------------------------------------------ |
+| Team Vault | 0xB6182416d1b3DA8dabC3E3E166856C91e3c0063a |
+| TimeTicket | 0x3773bd87bF9229e5f69D235CA0aF776A82331634 |
+
 ## Key Events
 
 ### Core Game Events
@@ -50,8 +59,8 @@ event RoundSettled(
     address indexed winner,
     uint256 totalPool,
     uint256 winnerAmount,
-    uint256 dividendAmount,
     uint256 airdropAmount,
+    uint256 dividendAmount,
     uint256 teamAmount,
     uint256 carryAmount
 );
@@ -62,10 +71,10 @@ event RoundSettled(
 - `roundId`: Settled round identifier
 - `winner`: Address of the round winner (last buyer)
 - `totalPool`: Total pool amount before distribution
-- `winnerAmount`: Amount allocated to winner (48%)
+- `winnerAmount`: Amount allocated to winner (50%)
 - `dividendAmount`: Total amount for participant dividends (20%)
 - `airdropAmount`: Total amount for airdrop winners (10%)
-- `teamAmount`: Amount sent to team vault (12%)
+- `teamAmount`: Amount sent to team vault (10%)
 - `carryAmount`: Amount carried to next round (10%)
 
 #### `VaultFunded`
@@ -85,6 +94,38 @@ event VaultFunded(
 - `desiredAmount`: Amount the system wanted to inject
 - `injectedAmount`: Actual amount injected (may be less if vault balance insufficient)
 - `ratioBps`: VRF-generated funding ratio in basis points (5%-10%)
+
+#### `Claimed`
+
+```solidity
+event Claimed(
+    uint256 indexed roundId,
+    uint256 grossPayout,
+    RewardType[] rewardTypes,
+    address indexed user
+);
+```
+
+**Use Case**: Track user reward claims
+
+- `roundId`: Round from which rewards were claimed
+- `grossPayout`: Total gross amount before protocol fees
+- `rewardTypes`: Array of reward types claimed (Winner, Dividend, Airdrop)
+- `user`: Address that claimed rewards
+
+#### `ExpiredSwept`
+
+```solidity
+event ExpiredSwept(
+    uint256 indexed roundId,
+    uint256 amount
+);
+```
+
+**Use Case**: Track when expired unclaimed rewards are swept to vault
+
+- `roundId`: Round whose expired rewards were swept
+- `amount`: Amount swept to the team vault
 
 ### Configuration Events
 
@@ -211,10 +252,15 @@ function isAirdropWinner(uint256 roundId, address user) external view returns (b
 #### Get Round Winners
 
 ```solidity
-function airdropWinners(uint256 roundId) external view returns (address[]);
+function airdropWinners(uint256 roundId, uint256 index) external view returns (address);
 ```
 
-**Use Case**: Display all airdrop winners for a round
+**Use Case**: Get specific airdrop winner by index
+
+- `roundId`: Round to query
+- `index`: Index of the airdrop winner (0-based)
+
+**Note**: To get all airdrop winners, iterate from index 0 until you reach `airdropWinnersCount`
 
 ### Round Information
 
@@ -268,6 +314,33 @@ function airdropPerWinner(uint256 roundId) external view returns (uint256);
 
 **Use Case**: Calculate potential rewards before claiming
 
+### VRF and Randomness
+
+#### Check VRF Request Status
+
+```solidity
+// Get VRF request ID for a round
+function roundToRequest(uint256 roundId) external view returns (uint256);
+
+// Get round ID for a VRF request
+function requestToRound(uint256 requestId) external view returns (uint256);
+
+// Get randomness value for a round
+function roundRandomness(uint256 roundId) external view returns (uint256);
+```
+
+**Use Case**: Monitor VRF status and verify randomness availability
+
+### Expiry Management
+
+#### Check Sweep Status
+
+```solidity
+function sweptExpired(uint256 roundId) external view returns (bool);
+```
+
+**Use Case**: Check if expired rewards have been swept to vault
+
 ## Key State Variables
 
 ```solidity
@@ -284,18 +357,23 @@ address public vault;                    // Team vault address
 address public feeRecipient;             // Protocol fee recipient
 
 // Distribution percentages (in basis points, 10000 = 100%)
-uint16 public winnerBps;    // Winner share (default: 4800 = 48%)
+uint16 public winnerBps;    // Winner share (default: 5000 = 50%)
 uint16 public dividendBps;  // Participant dividends (default: 2000 = 20%)
 uint16 public airdropBps;   // Airdrop pool (default: 1000 = 10%)
-uint16 public teamBps;      // Team share (default: 1200 = 12%)
+uint16 public teamBps;      // Team share (default: 1000 = 10%)
 uint16 public carryBps;     // Carry to next round (default: 1000 = 10%)
 
 // User participation tracking
 mapping(address => uint256[]) public userRounds; // All rounds a user participated in
 
+// Claim expiry configuration
+uint256 public claimExpiryRounds;   // Rounds after which claims expire (default: 24)
+
 // VRF funding configuration
 uint16 public fundingRatioMinBps;   // Min funding ratio (default: 500 = 5%)
 uint16 public fundingRatioRangeBps; // Funding range (default: 501 = 5.01%)
+uint256 public defaultCallbackGas;  // VRF callback gas limit
+uint256 public defaultMaxAllowedGasPrice; // VRF max gas price (default: 50 gwei)
 ```
 
 ## Contract Functions for User Actions
@@ -331,7 +409,37 @@ function claim(
 **Parameters**:
 
 - `roundId`: Round to claim rewards from
-- `rewardTypes`: Array of reward types to claim (can claim multiple at once)
+- `rewardTypes`: Array of reward types to claim
+
+**Important**: Rewards are **EXCLUSIVE** - users can only claim ONE type per round:
+
+- **Winner**: Final winner gets 50% of net pool (highest priority)
+- **Airdrop**: Random winners get 10% split (excludes final winner)
+- **Dividend**: All other participants get 20% split (excludes winner & airdrop winners)
+
+### Sweep Expired Rewards
+
+```solidity
+function sweepExpired(uint256 roundId) external;
+```
+
+**Use Case**: Manually sweep expired unclaimed rewards to the team vault
+
+- `roundId`: Round whose expired rewards should be swept
+- Claims expire after `claimExpiryRounds` rounds (default: 24)
+- Only works if the round has expired and hasn't been swept yet
+
+### Request VRF Randomness
+
+```solidity
+function requestRandomnessForCurrentRound(uint256 deadline) external returns (uint256 requestId);
+```
+
+**Use Case**: Request VRF randomness for funding ratio and airdrop selection
+
+- `deadline`: Deadline for the VRF request
+- Returns the VRF request ID
+- Must be called before settlement to enable VRF-based features
 
 ## Constants
 
@@ -348,10 +456,15 @@ Common revert reasons:
 - `EXPIRED`: Transaction deadline passed
 - `PRICE_SLIPPAGE`: Current price exceeds maxTotalCost
 - `INSUFFICIENT_MSG_VALUE`: Not enough ETH sent
+- `REFUND_FAIL`: Failed to refund excess payment
 - `ROUND_SETTLED`: Cannot buy tickets in settled round
 - `ROUND_NOT_OVER`: Cannot settle active round
+- `ROUND_NOT_SETTLED`: Cannot claim from unsettled round
 - `NO_RANDOMNESS`: VRF randomness not available
 - `NOTHING_TO_CLAIM`: No claimable rewards
 - `VAULT_ZERO`: Invalid vault address
+- `WINNER_NOT_AT_END`: Internal error - winner optimization failed
+- `ALREADY_SWEPT`: Round rewards already swept
+- `NOT_EXPIRED`: Round claims not yet expired
 
 This documentation provides all the essential information for frontend developers to integrate with the TimeTicket contract effectively.

@@ -115,10 +115,10 @@ contract TimeTicketUpgradeable is
         airdropWinnersCount = 5;
         fundingRatioMinBps = 500; // 5%
         fundingRatioRangeBps = 501; // range span
-        winnerBps = 4800; // 48%
+        winnerBps = 5000; // 50%
         airdropBps = 1000; // 10%
         dividendBps = 2000; // 20%
-        teamBps = 1200; // 12%
+        teamBps = 1000; // 10%
         carryBps = 1000; // 10%
 
         // Initialize other defaults
